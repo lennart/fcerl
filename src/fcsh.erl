@@ -1,11 +1,24 @@
 -module(fcsh).
--export([start/1,compile/1,code_change/3,terminate/2,handle_cast/2,handle_info/2,init/1]).
+-export([start/0,compile/1,code_change/3,terminate/2,handle_cast/2,handle_info/2,init/1]).
 -behaviour(gen_server).
-
+-define(LOG(Message,Interpolations),io:format(Message,Interpolations)).
 -record(state, {port,target,tasks, errors, response, compiled}).
 
-start(Pid) ->
-  gen_server:start_link({local, ?MODULE}, ?MODULE, [self()], []).
+start() ->
+  gen_server:start_link({local, ?MODULE}, ?MODULE, [self()], []),
+  receive
+    {data, [{errors, []},{response, Response}]} ->
+      FlattenedResponse = lists:flatten(Response),
+      io:format("Response: ~p~n",[FlattenedResponse]),
+      FlattenedResponse;
+    {data, [{errors, Errors},{response, _Response}]} ->
+      FlattenedErrors = lists:flatten(Errors),
+      io:format("Error: ~p~n",[FlattenedErrors]),
+      {error, FlattenedErrors};
+    Else ->
+      io:format("This does not match anything: ~p~n",[Else]),
+      {error,"Failed"}
+  end.
 
 compile(Command) ->
   gen_server:cast(?MODULE,{cmd, [lists:flatten(io_lib:format("~s~n",[Command])),self()]}),
@@ -38,15 +51,15 @@ init([Pid]) ->
     {ok, #state{port=Port, target=Pid, response=[], tasks=[], errors=[], compiled=false}}.
 
 handle_cast({cmd, [Data, Pid]}, #state{port = Port, target = _Pid, response = Response, errors = Errors, tasks= Tasks, compiled = Compiled} = State) ->
-  io:format("Processing Command: ~p~nPort: ~p~nAlready Compiled?: ~p~n",[Data,Port,Compiled]),
-  case proplists:lookup(Data,Tasks) of
-    {Data, Id} ->
-      Port ! {self(), {command, lists:flatten(io_lib:format("compile ~s~n",[Id]))}},
-      {noreply, #state{port = Port, target = Pid, tasks = Tasks, errors = [], response = [], compiled = Compiled}};
-    _ ->
-
+  case index_of(Data,Tasks) of
+    not_found ->
+      io:format("Processing New Command: ~p~nPort: ~p~n",[Data,Port]),
       Port ! {self(), {command, Data}},
-      {noreply, #state{port = Port, target = Pid, tasks = [{Data,"1"}|Tasks], response = [], errors = [], compiled = Compiled}}
+      {noreply, #state{port = Port, target = Pid, tasks = lists:append(Tasks,[Data]), response = [], errors = [], compiled = Compiled}};
+    Id ->
+      io:format("Incremental Compilation for ID: ~B~n",[Id]),
+      Port ! {self(), {command, lists:flatten(io_lib:format("compile ~B~n",[Id]))}},
+      {noreply, #state{port = Port, target = Pid, tasks = Tasks, errors = [], response = [], compiled = Compiled}}
   end.
 
 
@@ -56,25 +69,24 @@ handle_info(Info, #state{port = Port, target = Pid, response = Response, errors 
       List = binary_to_list(Data),
       Tokens = string:tokens(List,"\n"),
       {Finished, NewErrors, NewIntermediates} = lists:foldl(
-        fun(Token, {Finished, NewErrors, NewIntermediates}) -> 
+        fun(Token, {_Finished, _Errors, _Intermediates}) -> 
             case Token of
               [] ->
-                {Finished, NewErrors, NewIntermediates};
+                {_Finished, _Errors, _Intermediates};
               "(fcsh) " ->
-                {true, NewErrors, NewIntermediates};
+                {true, _Errors, _Intermediates};
               Intermediate ->
-                Input = binary_to_list(Data),
-                ErrorAt = string:str(Input,"Error:"),
+                ErrorAt = string:str(Token,"Error:"),
                 if
                   ErrorAt > 0 ->
                     io:format("Error encountered~n", []),
-                    {Finished, [Data|NewErrors], NewIntermediates};
+                    {_Finished, add_if_unique(list_to_binary(Token), _Errors), _Intermediates};
                   true ->
-                    {Finished, NewErrors, [Data|NewIntermediates]}
+                    {_Finished, _Errors, add_if_unique(list_to_binary(Token),_Intermediates)}
                 end
             end
         end,{false,[],[]},Tokens),
-      io:format("Report~nFinished: ~p~nErrors: ~p~nIntermediates: ~p~n",[Finished,NewErrors,NewIntermediates]),
+      ?LOG("Report~nFinished: ~p~nErrors: ~p~nIntermediates: ~p~n",[Finished,NewErrors,NewIntermediates]),
       if
         Finished ->
           Pid ! {data, [{errors, lists:flatten([NewErrors|Errors])},{response, lists:flatten([NewIntermediates|Response])}]},
@@ -86,4 +98,20 @@ handle_info(Info, #state{port = Port, target = Pid, response = Response, errors 
       io:format("Else: ~p~n", [Else]),
       {noreply, State}
   end.
+
+add_if_unique(E, List) ->
+  case lists:any(fun(X) -> X == E end,List) of
+    true ->
+      List;
+    false ->
+      [E|List]
+  end.
+
+% Taken from Stackoverflow http://stackoverflow.com/questions/1459152/erlang-listsindex-of-function
+% by sepp2k
+index_of(Item, List) -> index_of(Item, List, 1).
+
+index_of(_, [], _)  -> not_found;
+index_of(Item, [Item|_], Index) -> Index;
+index_of(Item, [_|Tl], Index) -> index_of(Item, Tl, Index+1).
 
