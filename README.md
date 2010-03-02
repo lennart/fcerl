@@ -34,18 +34,18 @@ and then
 
 check for errors and print the response
 
-    unless response.shift == :error
-      puts response.shift
+    unless (status = response.shift) == :error
+      puts response
     else
-      raise response.shift
+      raise response.unshift status
     end
 
-and you're done.  
+and you're done. The response is a __BERT::Tuple__ that contains each line of the fcsh response, so you can simply `join "\n"` it for output.  
 Subsequent compile requests will use incremental compilation, so compilation should only take a few seconds.
 
 Current limitations & freaking weird stuff
 ------------------------------------------
 * Be less verbose, please!  
-* Don't hardcode compile ids, currently only the first command will be able to leverage from the incremental compilation.  
+* <del>Don't hardcode compile ids, currently only the first command will be able to leverage from the incremental compilation. </del> Fixed with latest commit
 * better, or at least some kind of integration with project sprouts
 
