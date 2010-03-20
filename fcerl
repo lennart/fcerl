@@ -1,0 +1,2 @@
+#!/bin/sh
+ernie -p 7890 -c fcsh.cfg
